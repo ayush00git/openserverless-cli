@@ -225,8 +225,6 @@ func executeTools(args []string, opsHome string) int {
 	case "l", "login":
 		args[0] = "-login"
 		os.Args = args
-		// the apihost given on the command line must bypass a configured proxy
-		ensureNoProxyFor(loginApiHostArg(args[1:]))
 		loginResult, err := auth.LoginCmd()
 		if err != nil {
 			log.Fatalf("error: %s", err.Error())
@@ -348,6 +346,7 @@ func Main() {
 	// behind a proxy, the apihost must bypass it: add it to NO_PROXY before
 	// any network call (Go reads the proxy env only once per process)
 	ensureApiHostNoProxy()
+	ensureLoginNoProxy(os.Args[1:])
 
 	// ensure there is ~/.ops/tmp
 	err = setupTmp()

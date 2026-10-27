@@ -51,6 +51,17 @@ func ensureApiHostNoProxy() {
 	setNoProxy(hosts...)
 }
 
+// ensureLoginNoProxy adds the apihost given to `ops -login <apihost>` to NO_PROXY.
+// args are the command line arguments after the program name. It must run before
+// the first network call of the process (tasks download, update check), because
+// Go reads the proxy environment only once.
+func ensureLoginNoProxy(args []string) {
+	if len(args) == 0 || (args[0] != "-l" && args[0] != "-login") {
+		return
+	}
+	ensureNoProxyFor(loginApiHostArg(args[1:]))
+}
+
 // ensureNoProxyFor adds the given apihost to NO_PROXY, for commands that take
 // the apihost as an argument (ops -login <apihost>).
 func ensureNoProxyFor(apihost string) {

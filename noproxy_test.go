@@ -133,6 +133,23 @@ func TestLoginApiHostArg(t *testing.T) {
 	require.Equal(t, "https://cloud.example.com", loginApiHostArg([]string{"user"}))
 }
 
+func TestEnsureLoginNoProxy(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTP_PROXY", "http://proxy.corp:3128")
+
+	// not a login: nothing happens
+	ensureLoginNoProxy([]string{"-wsk", "action", "list"})
+	ensureLoginNoProxy([]string{"setup", "devcluster"})
+	ensureLoginNoProxy(nil)
+	require.Equal(t, "", os.Getenv("NO_PROXY"))
+
+	ensureLoginNoProxy([]string{"-login", "http://miniops.me", "user"})
+	require.Equal(t, "miniops.me", os.Getenv("NO_PROXY"))
+
+	ensureLoginNoProxy([]string{"-l", "-sso-flow", "device", "https://cloud.example.com"})
+	require.Equal(t, "miniops.me,cloud.example.com", os.Getenv("NO_PROXY"))
+}
+
 func TestEnsureNoProxyFor(t *testing.T) {
 	clearProxyEnv(t)
 	ensureNoProxyFor("http://miniops.me")
