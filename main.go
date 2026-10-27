@@ -225,6 +225,8 @@ func executeTools(args []string, opsHome string) int {
 	case "l", "login":
 		args[0] = "-login"
 		os.Args = args
+		// the apihost given on the command line must bypass a configured proxy
+		ensureNoProxyFor(loginApiHostArg(args[1:]))
 		loginResult, err := auth.LoginCmd()
 		if err != nil {
 			log.Fatalf("error: %s", err.Error())
@@ -343,6 +345,10 @@ func Main() {
 		log.Fatalf("cannot setup PATH: %s", err.Error())
 	}
 
+	// behind a proxy, the apihost must bypass it: add it to NO_PROXY before
+	// any network call (Go reads the proxy env only once per process)
+	ensureApiHostNoProxy()
+
 	// ensure there is ~/.ops/tmp
 	err = setupTmp()
 	if err != nil {
@@ -415,6 +421,9 @@ func Main() {
 	if err != nil {
 		log.Fatalf("cannot apply env vars from configs: %s", err.Error())
 	}
+	// the config may have set OPERATOR_CONFIG_APIHOST: add it to NO_PROXY too,
+	// so wsk, bun and curl spawned by the tasks reach the apihost directly
+	ensureApiHostNoProxy()
 
 	// preflight checks - we need at least ssh curl to proceed
 	if err := preflightChecks(); err != nil {
