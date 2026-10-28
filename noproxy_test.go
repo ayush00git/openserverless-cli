@@ -17,8 +17,10 @@
 package openserverless
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -65,6 +67,43 @@ func TestMergeNoProxy(t *testing.T) {
 	require.Equal(t, "a,b", mergeNoProxy("a", "b"))
 }
 
+// stubDNS makes name resolution deterministic: names map to the given addresses,
+// unknown names fail to resolve.
+func stubDNS(t *testing.T, table map[string][]string) {
+	orig := lookupHost
+	lookupHost = func(host string) ([]string, error) {
+		if addrs, ok := table[strings.ToLower(host)]; ok {
+			return addrs, nil
+		}
+		return nil, errors.New("no such host: " + host)
+	}
+	t.Cleanup(func() { lookupHost = orig })
+}
+
+func TestIsLocalHost(t *testing.T) {
+	stubDNS(t, map[string][]string{
+		"miniops.me":        {"127.0.0.1"},
+		"s3.miniops.me":     {"64:ff9b::7f00:1", "127.0.0.1"}, // DNS64 network
+		"nat64.example":     {"64:ff9b::7f00:1"},
+		"lan.corp.internal": {"10.20.30.40"},
+		"cloud.example.com": {"203.0.113.10"},
+		"mixed.example.com": {"203.0.113.10", "192.168.1.5"},
+	})
+	local := []string{
+		"localhost", "LOCALHOST", "127.0.0.1", "::1", "0.0.0.0",
+		"10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "fd00::1", "fe80::1",
+		"miniops.me", "s3.miniops.me", "nat64.example", "lan.corp.internal", "mixed.example.com",
+	}
+	for _, h := range local {
+		require.True(t, isLocalHost(h), "%q should be local", h)
+	}
+	remote := []string{"8.8.8.8", "203.0.113.10", "2001:db8::1", "172.32.0.1", "cloud.example.com", "unresolvable.example"}
+	for _, h := range remote {
+		require.False(t, isLocalHost(h), "%q should not be local", h)
+	}
+	require.Equal(t, []string{"miniops.me", "10.0.0.1"}, localHosts([]string{"miniops.me", "cloud.example.com", "10.0.0.1", "unresolvable.example"}))
+}
+
 func clearProxyEnv(t *testing.T) {
 	for _, name := range append([]string{"NO_PROXY", "no_proxy", "OPS_APIHOST", "OPERATOR_CONFIG_APIHOST"}, proxyEnvVars...) {
 		t.Setenv(name, "")
@@ -74,6 +113,11 @@ func clearProxyEnv(t *testing.T) {
 
 func TestEnsureApiHostNoProxy(t *testing.T) {
 	clearProxyEnv(t)
+	stubDNS(t, map[string][]string{
+		"miniops.me":        {"127.0.0.1"},
+		"cloud.example.com": {"10.0.0.5"},
+		"wsk.example.com":   {"192.168.0.9"},
+	})
 	// wskprops in a temp file so the test does not depend on ~/.wskprops
 	wskProps := filepath.Join(t.TempDir(), "wskprops")
 	t.Setenv("WSK_CONFIG_FILE", wskProps)
@@ -116,6 +160,14 @@ func TestEnsureApiHostNoProxy(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://proxy.corp:3128")
 	ensureApiHostNoProxy()
 	require.Equal(t, "", os.Getenv("NO_PROXY"))
+
+	// a remote apihost keeps going through the proxy: NO_PROXY untouched
+	stubDNS(t, map[string][]string{"api.example.com": {"203.0.113.10"}})
+	t.Setenv("OPS_APIHOST", "https://api.example.com")
+	t.Setenv("NO_PROXY", "localhost")
+	ensureApiHostNoProxy()
+	require.Equal(t, "localhost", os.Getenv("NO_PROXY"))
+	require.Equal(t, "", os.Getenv("no_proxy"))
 }
 
 func TestLoginApiHostArg(t *testing.T) {
@@ -135,6 +187,7 @@ func TestLoginApiHostArg(t *testing.T) {
 
 func TestEnsureLoginNoProxy(t *testing.T) {
 	clearProxyEnv(t)
+	stubDNS(t, map[string][]string{"miniops.me": {"127.0.0.1"}, "cloud.example.com": {"172.20.0.1"}})
 	t.Setenv("HTTP_PROXY", "http://proxy.corp:3128")
 
 	// not a login: nothing happens
@@ -152,6 +205,7 @@ func TestEnsureLoginNoProxy(t *testing.T) {
 
 func TestEnsureNoProxyFor(t *testing.T) {
 	clearProxyEnv(t)
+	stubDNS(t, map[string][]string{"miniops.me": {"127.0.0.1"}, "cloud.example.com": {"203.0.113.10"}})
 	ensureNoProxyFor("http://miniops.me")
 	require.Equal(t, "", os.Getenv("NO_PROXY"), "no proxy configured")
 
@@ -161,5 +215,9 @@ func TestEnsureNoProxyFor(t *testing.T) {
 	require.Equal(t, "miniops.me", os.Getenv("no_proxy"))
 
 	ensureNoProxyFor("")
+	require.Equal(t, "miniops.me", os.Getenv("NO_PROXY"))
+
+	// remote apihost: not added
+	ensureNoProxyFor("https://cloud.example.com")
 	require.Equal(t, "miniops.me", os.Getenv("NO_PROXY"))
 }

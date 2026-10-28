@@ -26,13 +26,12 @@ import (
 	"github.com/mitchellh/go-homedir"
 )
 
-// Behind a corporate proxy, requests to the OpenServerless apihost must bypass
-// the proxy: the apihost is usually local (http://miniops.me resolves to
-// 127.0.0.1) or inside the user's network, and the proxy cannot reach it.
-// Go, bun and curl all route a hostname through the proxy unless it is listed
-// in NO_PROXY, and they only match by name, not by the address it resolves to.
-// Since ops knows the apihost, it adds it to NO_PROXY for itself and for every
-// process it spawns (wsk, bun, curl in tasks).
+// Behind a corporate proxy, requests to a local OpenServerless apihost (for
+// example http://miniops.me, which resolves to 127.0.0.1) must bypass the
+// proxy, since the proxy cannot reach it. Go, bun and curl route a hostname
+// through the proxy unless it is listed in NO_PROXY, matching by name rather
+// than by address, so ops adds such apihosts to NO_PROXY for itself and for
+// every process it spawns (wsk, bun, curl in tasks).
 
 var proxyEnvVars = []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"}
 
@@ -44,7 +43,7 @@ func ensureApiHostNoProxy() {
 	if !proxyConfigured() {
 		return
 	}
-	hosts := apiHostNames(os.Getenv("OPS_APIHOST"), os.Getenv("OPERATOR_CONFIG_APIHOST"), wskPropsAPIHost())
+	hosts := localHosts(apiHostNames(os.Getenv("OPS_APIHOST"), os.Getenv("OPERATOR_CONFIG_APIHOST"), wskPropsAPIHost()))
 	if len(hosts) == 0 {
 		return
 	}
@@ -68,11 +67,60 @@ func ensureNoProxyFor(apihost string) {
 	if !proxyConfigured() {
 		return
 	}
-	hosts := apiHostNames(apihost)
+	hosts := localHosts(apiHostNames(apihost))
 	if len(hosts) == 0 {
 		return
 	}
 	setNoProxy(hosts...)
+}
+
+// lookupHost resolves a host name; replaced in tests.
+var lookupHost = net.LookupHost
+
+// localHosts keeps only the hosts the proxy cannot reach: those that are, or
+// resolve to, a loopback, private or link-local address. Remote hosts and names
+// that do not resolve go through the proxy.
+func localHosts(hosts []string) []string {
+	var local []string
+	for _, h := range hosts {
+		if isLocalHost(h) {
+			local = append(local, h)
+		}
+	}
+	return local
+}
+
+func isLocalHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return isLocalIP(ip)
+	}
+	addrs, err := lookupHost(host)
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil && isLocalIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// nat64Prefix is the well-known NAT64 prefix (64:ff9b::/96); such addresses
+// embed an IPv4 address in their last four bytes.
+var nat64Prefix = net.ParseIP("64:ff9b::")
+
+func isLocalIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+		return true
+	}
+	if ip16 := ip.To16(); ip16 != nil && ip.To4() == nil && nat64Prefix.Equal(append(ip16[:12:12], 0, 0, 0, 0)) {
+		return isLocalIP(net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15]))
+	}
+	return false
 }
 
 func setNoProxy(hosts ...string) {
